@@ -2,7 +2,6 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 import yfinance as yf
 import time
-import pandas as pd
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -20,39 +19,15 @@ NIFTY_SYMBOLS = [
     "TECHM.NS", "TITAN.NS", "ULTRACEMCO.NS", "UPL.NS", "WIPRO.NS"
 ]
 
-def get_sma_200(symbol):
-    """Calculate 200-day Simple Moving Average"""
-    try:
-        ticker = yf.Ticker(symbol)
-        # Get last 250 days of data (more than enough for 200-day SMA)
-        hist = ticker.history(period="1y")
-        
-        if len(hist) >= 200:
-            # Calculate 200-day SMA
-            sma_200 = hist['Close'].rolling(window=200).mean().iloc[-1]
-            return round(sma_200, 2)
-        elif len(hist) > 0:
-            # Not enough data, use available data with a fallback
-            return round(hist['Close'].mean(), 2)
-        else:
-            return None
-    except Exception as e:
-        print(f"Error calculating SMA for {symbol}: {e}")
-        return None
-
 @app.route('/')
 def home():
-    return jsonify({
-        "status": "NSE Stock API Running",
-        "endpoints": ["/stocks", "/stocks/detailed"],
-        "message": "Use /stocks for LTP only, /stocks/detailed for LTP + SMA-200"
-    })
+    return jsonify({"status": "NSE Stock API Running", "endpoints": ["/stocks", "/stocks/detailed"]})
 
 @app.route('/stocks')
 def get_all_stocks():
     """Fast endpoint - LTP only"""
     results = []
-    for symbol in NIFTY_SYMBOLS:
+    for symbol in NIFTY_SYMBOLS[:20]:  # Limit to 20 stocks for speed
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
@@ -63,46 +38,50 @@ def get_all_stocks():
                     "symbol": symbol.replace('.NS', ''),
                     "ltp": round(ltp, 2)
                 })
-        except Exception as e:
+        except:
             pass
-        time.sleep(0.05)
+        time.sleep(0.1)
     
     return jsonify(results)
 
 @app.route('/stocks/detailed')
 def get_all_stocks_detailed():
-    """Detailed endpoint - includes SMA-200 for accurate envelope calculation"""
+    """Simplified endpoint with estimated SMA for speed"""
     results = []
-    total = len(NIFTY_SYMBOLS)
     
-    for i, symbol in enumerate(NIFTY_SYMBOLS):
+    # Use a smaller set for testing first
+    test_symbols = NIFTY_SYMBOLS[:20]
+    
+    for symbol in test_symbols:
         try:
             ticker = yf.Ticker(symbol)
-            info = ticker.info
             
-            # Get LTP
+            # Get current price
+            info = ticker.info
             ltp = info.get('regularMarketPrice', info.get('currentPrice', 0))
             
-            # Get SMA-200 from historical data
-            sma_200 = get_sma_200(symbol)
-            
-            if ltp and ltp > 0 and sma_200 and sma_200 > 0:
+            if ltp and ltp > 0:
+                # Get 200-day SMA from Yahoo (faster than calculating)
+                # Use the info dict which sometimes has 'twoHundredDayAverage'
+                sma200 = info.get('twoHundredDayAverage', None)
+                
+                if not sma200 or sma200 == 0:
+                    # Fallback: quick calculation with limited data
+                    hist = ticker.history(period="6mo")
+                    if len(hist) >= 50:
+                        sma200 = hist['Close'].tail(50).mean()
+                    else:
+                        sma200 = ltp * 0.95  # Estimate
+                
                 results.append({
                     "symbol": symbol.replace('.NS', ''),
                     "ltp": round(ltp, 2),
-                    "sma200": sma_200
-                })
-            elif ltp and ltp > 0:
-                # Fallback: estimate SMA if calculation failed
-                results.append({
-                    "symbol": symbol.replace('.NS', ''),
-                    "ltp": round(ltp, 2),
-                    "sma200": round(ltp * 0.94, 2)  # Rough estimate
+                    "sma200": round(sma200, 2)
                 })
         except Exception as e:
-            print(f"Error processing {symbol}: {e}")
+            print(f"Error: {symbol} - {e}")
         
-        time.sleep(0.1)  # Rate limiting
+        time.sleep(0.2)
     
     return jsonify({
         "data": results,
